@@ -1,0 +1,16 @@
+apiVersion: v2
+name: tenzir-node
+description: A Helm chart for running Tenzir Node on Kubernetes.
+type: application
+version: 0.1.0
+appVersion: "latest"
+keywords:
+  - tenzir
+  - security-data
+  - telemetry
+home: https://tenzir.com
+sources:
+  - https://github.com/tenzir/tenzir
+maintainers:
+  - name: Tenzir
+    url: https://tenzir.com

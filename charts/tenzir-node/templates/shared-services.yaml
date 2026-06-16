@@ -1,0 +1,26 @@
+{{- range $svc := default list .Values.sharedServices }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "tenzir-node.fullname" $ }}-{{ $svc.name }}
+  labels:
+    {{- include "tenzir-node.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: shared
+    tenzir.io/shared-service: {{ $svc.name | quote }}
+  {{- with $svc.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ default "ClusterIP" $svc.type }}
+  ports:
+    - name: {{ $svc.name }}
+      port: {{ int $svc.port }}
+      targetPort: {{ default $svc.port $svc.targetPort | int }}
+      protocol: {{ default "TCP" $svc.protocol }}
+  selector:
+    {{- include "tenzir-node.selectorLabels" $ | nindent 4 }}
+    app.kubernetes.io/component: node
+    {{ include "tenzir-node.sharedLabelKey" (dict "name" $svc.name) }}: "true"
+{{- end }}

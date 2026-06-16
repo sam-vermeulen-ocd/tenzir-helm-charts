@@ -1,0 +1,25 @@
+{{- if .Values.networkPolicy.enabled -}}
+{{- $np := .Values.networkPolicy -}}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "tenzir-node.fullname" $ }}
+  labels:
+    {{- include "tenzir-node.labels" $ | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "tenzir-node.selectorLabels" $ | nindent 6 }}
+      app.kubernetes.io/component: node
+  policyTypes:
+    - Ingress
+  ingress:
+    {{- if $np.allowSameNamespace }}
+    - from:
+        - podSelector: {}
+    {{- end }}
+    {{- with $np.ingress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+{{- end }}

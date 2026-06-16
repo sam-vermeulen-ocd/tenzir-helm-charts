@@ -1,0 +1,14 @@
+{{- range $node := .Values.nodes }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "tenzir-node.configMapName" (dict "root" $ "node" $node) }}
+  labels:
+    {{- include "tenzir-node.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: node
+    app.kubernetes.io/tenzir-node: {{ $node.name | quote }}
+data:
+  tenzir.yaml: |
+{{ include "tenzir-node.mergedConfig" (dict "root" $ "node" $node) | indent 4 }}
+{{ end }}

@@ -1,0 +1,9 @@
+Tenzir Node has been installed.
+
+Service DNS:
+{{- range $node := .Values.nodes }}
+  {{ include "tenzir-node.nodeName" (dict "root" $ "node" $node) }}.{{ $.Release.Namespace }}.svc.cluster.local:{{ $.Values.service.port }}
+{{- end }}
+
+Run a connection test with:
+  helm test {{ .Release.Name }}

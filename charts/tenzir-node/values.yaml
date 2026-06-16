@@ -1,0 +1,214 @@
+image:
+  # `registry` is prepended to `repository` (separated by a slash) when set,
+  # so it is easy to redirect to a mirror without rewriting `repository`.
+  # Set to "" to use whatever default registry the cluster resolves
+  # `repository` against (e.g. Docker Hub).
+  registry: docker.io
+  repository: tenzir/tenzir
+  # `latest` tracks the newest Tenzir release. Production deployments
+  # should pin a specific tag here (e.g. `v6.2.0`) so upgrades are an
+  # explicit, reviewable change rather than an implicit re-pull. See the
+  # README's "Pinning the image" section.
+  tag: latest
+  pullPolicy: Always
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: false
+  automount: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+# The Tenzir image runs as the tenzir user. fsGroup makes freshly provisioned
+# persistent volumes writable by the container without running it as root.
+podSecurityContext:
+  fsGroup: 999
+  fsGroupChangePolicy: OnRootMismatch
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  runAsNonRoot: true
+  # The Tenzir image declares its user by name (`tenzir`). Kubernetes's
+  # `runAsNonRoot` admission check requires a numeric uid to verify, so we
+  # pin uid/gid to match the image's `tenzir` user (also matches the
+  # `podSecurityContext.fsGroup` below).
+  runAsUser: 999
+  runAsGroup: 999
+  seccompProfile:
+    type: RuntimeDefault
+  capabilities:
+    # Validated against tenzir-node v6.2.0: dropping ALL does not break
+    # node-to-node RPC, platform connection, `accept_http` listeners,
+    # `import`/`export`, or persistent state.
+    drop: [ALL]
+    # Whether you need to add NET_BIND_SERVICE depends on the cluster's
+    # `net.ipv4.ip_unprivileged_port_start` sysctl, not the port number:
+    #   - 0 (Docker Desktop, kind, k3s, most managed distros) — every port
+    #     is unprivileged; no capability needed even for 80, 514, etc.
+    #   - 1024 (kernel legacy default) — binding < 1024 requires the cap.
+    # Check with `cat /proc/sys/net/ipv4/ip_unprivileged_port_start` from
+    # a pod. If it returns 1024 and you bind a low port, uncomment:
+    # add: [NET_BIND_SERVICE]
+  # The chart mounts /var/lib/tenzir (PVC) and /tmp (emptyDir) as writable;
+  # everything else on the image root is read-only. Validated end-to-end on
+  # v6.2.0: startup, platform link, `accept_http`, `import`/`export`, and
+  # `to_file` to /tmp or the PVC all work. Pipelines that write to a path
+  # outside those two trees fail with a clean IOError without crashing the
+  # node — add an `extraVolumes` / `extraVolumeMounts` pair if you need
+  # other writable directories.
+  readOnlyRootFilesystem: true
+
+service:
+  type: ClusterIP
+  port: 5158
+  annotations: {}
+
+tenzir:
+  # Global Tenzir configuration merged into each node's tenzir.yaml.
+  # This should use the same structure as the root of a Tenzir config file.
+  # The chart injects sane defaults for:
+  # - tenzir.endpoint: 0.0.0.0:5158
+  # - tenzir.file-verbosity: quiet
+  # - tenzir.console-sink: stderr
+  # Override them here or in nodes[].config.
+  #
+  # WARNING: values placed here land in a ConfigMap in plaintext. Do not put
+  # secrets (API keys, passwords, anything you would not commit to git) into
+  # `tenzir.config` or `nodes[].config`. Use `nodes[].token` for the node
+  # token, and `extraEnv` with a `valueFrom.secretKeyRef` for other secrets.
+  config: {}
+
+# Static Tenzir nodes to deploy. Each entry renders a dedicated one-pod
+# StatefulSet, Service, and state volume. Configure one static tnz_... token per
+# node; do not reuse the same pre-provisioned node token across nodes.
+#
+# Each node MUST set exactly one of `token.value` or `token.existingSecret`.
+# `token.key` defaults to `TENZIR_TOKEN` and is used both when reading from
+# `existingSecret` and when the chart creates a Secret from `value`.
+nodes: []
+#  - name: default
+#    config: {}
+#    token:
+#      existingSecret: tenzir-default-token
+#      # key: TENZIR_TOKEN
+#    # Per-node extra ports. Each entry opens a containerPort on the pod and
+#    # adds a port to the node's main Service. Set `serviceType` to publish
+#    # the port via a dedicated Service (LoadBalancer/NodePort/ClusterIP)
+#    # instead of the main Service.
+#    extraPorts:
+#      - name: http
+#        containerPort: 8080
+#        # servicePort: 8080         # defaults to containerPort
+#        # serviceType: LoadBalancer # creates a dedicated Service for this port
+#        # protocol: TCP             # default TCP
+#        # annotations: {}           # only applied when serviceType is set
+#  - name: node-a
+#    token:
+#      value: tnz_replace_me
+
+# Fleet-wide Services that load-balance one port across multiple node pods.
+# Each entry creates a single additional Service whose endpoints span every
+# pod listed in `nodes`. Omit `nodes` (or set to "all") to target every node.
+# The selected pods automatically open the corresponding containerPort. Each
+# Tenzir node must still run a pipeline that actually listens on the port.
+sharedServices: []
+#  - name: http-ingest
+#    port: 8080
+#    # targetPort: 8080       # defaults to port
+#    type: LoadBalancer       # defaults to ClusterIP
+#    # protocol: TCP          # default TCP
+#    # nodes: [node-a, node-b]   # omit for all nodes
+#    # annotations: {}
+
+extraEnv: []
+# - name: TENZIR_IMPORT__BATCH_SIZE
+#   value: "65536"
+
+command:
+  - tenzir-node
+args: []
+
+persistence:
+  enabled: true
+  mountPath: /var/lib/tenzir
+  accessModes:
+    - ReadWriteOnce
+  size: 10Gi
+  storageClass: ""
+  annotations: {}
+  existingClaim: ""
+
+resources: {}
+
+readinessProbe:
+  enabled: true
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 2
+  failureThreshold: 6
+
+livenessProbe:
+  enabled: true
+  initialDelaySeconds: 30
+  periodSeconds: 30
+  timeoutSeconds: 2
+  failureThreshold: 3
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []
+
+priorityClassName: ""
+runtimeClassName: ""
+
+extraVolumes: []
+extraVolumeMounts: []
+initContainers: []
+
+updateStrategy:
+  type: RollingUpdate
+
+# Optional NetworkPolicy that scopes who may reach the node pods.
+# When `enabled: true`, the chart renders one NetworkPolicy selecting every
+# node pod in the release. By default (with no overrides) it only allows
+# ingress from pods in the same namespace. Customize via the fields below.
+networkPolicy:
+  enabled: false
+  # When true (the default when networkPolicy is enabled), traffic from any
+  # pod in the same namespace is permitted on the node port and any extra
+  # ports. Set to false if you want to deny same-namespace traffic and rely
+  # entirely on `ingress`.
+  allowSameNamespace: true
+  # Free-form additional ingress rules appended to the spec.
+  # Each entry follows the standard NetworkPolicyIngressRule schema.
+  ingress: []
+  #  - from:
+  #      - namespaceSelector:
+  #          matchLabels:
+  #            kubernetes.io/metadata.name: observability
+  #      - podSelector:
+  #          matchLabels:
+  #            app.kubernetes.io/name: prometheus
+  #    ports:
+  #      - port: 5158
+  #        protocol: TCP
+
+# Optional PodDisruptionBudget covering every Tenzir node pod in this release.
+# Leave empty to render no PDB. Set exactly one of `minAvailable` /
+# `maxUnavailable` to enable it. Each value may be an integer or a percentage
+# string (e.g. "50%"). The selector matches all node pods, so on a multi-node
+# deployment the budget serializes voluntary evictions across the fleet (use
+# `maxUnavailable: 1`). For a single-node deployment a budget is effectively a
+# no-op: `maxUnavailable: 1` lets the one pod be evicted as usual, and
+# `minAvailable: 1` will block voluntary drains indefinitely.
+podDisruptionBudget: {}
+# Examples:
+#   maxUnavailable: 1
+#   # minAvailable: "50%"

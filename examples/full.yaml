@@ -1,0 +1,92 @@
+# Reference values that exercise most chart features.
+# Useful as a target for `helm template` / `trivy config --helm-values`.
+
+image:
+  registry: docker.io
+  repository: tenzir/tenzir
+  tag: v6.2.0   # examples pin so the rendered manifest is stable
+
+tenzir:
+  # Global config merged into every node's tenzir.yaml.
+  config:
+    tenzir:
+      platform-control-endpoint: wss://example.invalid
+
+nodes:
+  # ---------------------------------------------------------------------
+  # node-a: HTTP ingest pipeline + a dedicated LoadBalancer Service for
+  # syslog/UDP. The ingest pipeline is declared as code under
+  # `tenzir.pipelines:` so it starts with the node and reincarnates after
+  # restarts.
+  # ---------------------------------------------------------------------
+  - name: node-a
+    token:
+      existingSecret: tenzir-node-a-token
+    extraPorts:
+      - name: http
+        containerPort: 8080
+      - name: syslog
+        containerPort: 514
+        serviceType: LoadBalancer
+        annotations:
+          external-dns.alpha.kubernetes.io/hostname: node-a.example.invalid
+    config:
+      tenzir:
+        pipelines:
+          ingest-http:
+            name: "HTTP ingest"
+            definition: |
+              accept_http "0.0.0.0:8080" { read_json }
+              this = { received_by: "node-a", received_at: now(), body: this }
+              import
+            restart-on-error: 1 minute
+
+  # ---------------------------------------------------------------------
+  # node-b: same HTTP ingest pipeline as node-a, plus a per-node config
+  # override. Combined with a `sharedServices` entry below, kube-proxy will
+  # load-balance :8080 traffic between node-a and node-b's pods.
+  # ---------------------------------------------------------------------
+  - name: node-b
+    token:
+      existingSecret: tenzir-node-b-token
+    config:
+      tenzir:
+        max-partition-size: 8Mi
+        pipelines:
+          ingest-http:
+            name: "HTTP ingest"
+            definition: |
+              accept_http "0.0.0.0:8080" { read_json }
+              this = { received_by: "node-b", received_at: now(), body: this }
+              import
+            restart-on-error: 1 minute
+
+  # ---------------------------------------------------------------------
+  # standby: no pipeline, no extra ports — quiet node demonstrating that
+  # not every entry needs to participate in everything.
+  # ---------------------------------------------------------------------
+  - name: standby
+    token:
+      existingSecret: tenzir-standby-token
+
+# Fleet-wide LoadBalancer that fronts node-a and node-b on port 8080.
+# kube-proxy round-robins requests across the two pods.
+sharedServices:
+  - name: http-ingest
+    port: 8080
+    type: LoadBalancer
+    nodes: [node-a, node-b]
+
+podDisruptionBudget:
+  maxUnavailable: 1
+
+networkPolicy:
+  enabled: true
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+      ports:
+        - port: 5158
+          protocol: TCP

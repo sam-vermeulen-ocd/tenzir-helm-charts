@@ -1,0 +1,28 @@
+{{- range $node := .Values.nodes }}
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "{{ include "tenzir-node.nodeName" (dict "root" $ "node" $node) }}-test-connection"
+  labels:
+    {{- include "tenzir-node.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: node
+    app.kubernetes.io/tenzir-node: {{ $node.name | quote }}
+  annotations:
+    "helm.sh/hook": test
+spec:
+  restartPolicy: Never
+  containers:
+    - name: tenzir
+      image: {{ include "tenzir-node.image" $ | quote }}
+      imagePullPolicy: {{ $.Values.image.pullPolicy }}
+      command:
+        - tenzir
+      args:
+        - --connection-timeout=30s
+        - --connection-retry-delay=1s
+        - api "/ping"
+      env:
+        - name: TENZIR_ENDPOINT
+          value: "{{ include "tenzir-node.nodeName" (dict "root" $ "node" $node) }}:{{ $.Values.service.port }}"
+{{- end }}

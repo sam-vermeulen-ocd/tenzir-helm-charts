@@ -1,0 +1,234 @@
+{{- if not .Values.nodes -}}
+{{- fail "at least one entry in nodes is required" -}}
+{{- end -}}
+{{- if and .Values.persistence.enabled .Values.persistence.existingClaim (gt (len .Values.nodes) 1) -}}
+{{- fail "persistence.existingClaim can only be used with one node because a single PVC cannot be mounted by multiple Tenzir Node pods safely" -}}
+{{- end -}}
+{{- $nodeNames := dict -}}
+{{- range $n := .Values.nodes -}}
+{{- $_ := set $nodeNames $n.name true -}}
+{{- end -}}
+{{- range $svc := default list .Values.sharedServices -}}
+{{- if eq $svc.name "node" -}}
+{{- fail "sharedServices[].name may not be \"node\" (reserved for the main node port)" -}}
+{{- end -}}
+{{- $cfg := $svc.nodes -}}
+{{- if and $cfg (ne (kindOf $cfg) "string") -}}
+{{- range $name := $cfg -}}
+{{- if not (hasKey $nodeNames $name) -}}
+{{- fail (printf "sharedServices[%q] references unknown node %q" $svc.name $name) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- $seen := dict -}}
+{{- range $node := .Values.nodes -}}
+{{- if not $node.name -}}
+{{- fail "each nodes[] entry requires a name" -}}
+{{- end -}}
+{{- if hasKey $seen $node.name -}}
+{{- fail (printf "duplicate node name %q" $node.name) -}}
+{{- end -}}
+{{- $_ := set $seen $node.name true -}}
+{{- $token := default dict $node.token -}}
+{{- if and $token.value $token.existingSecret -}}
+{{- fail (printf "node %q sets both token.value and token.existingSecret" $node.name) -}}
+{{- end -}}
+{{- /* Build deduplicated container-port set: "<port>/<protocol>" -> {name, containerPort, protocol} */ -}}
+{{- $ports := dict (printf "%d/TCP" (int $.Values.service.port)) (dict "name" "node" "containerPort" (int $.Values.service.port) "protocol" "TCP") -}}
+{{- range $p := default list $node.extraPorts -}}
+{{- if eq $p.name "node" -}}
+{{- fail (printf "node %q: extraPorts[].name may not be \"node\" (reserved)" $node.name) -}}
+{{- end -}}
+{{- $proto := default "TCP" $p.protocol -}}
+{{- $key := printf "%d/%s" (int $p.containerPort) $proto -}}
+{{- if not (hasKey $ports $key) -}}
+{{- $_ := set $ports $key (dict "name" $p.name "containerPort" (int $p.containerPort) "protocol" $proto) -}}
+{{- end -}}
+{{- end -}}
+{{- /* Which sharedServices include this node, and add their targetPort to $ports. */ -}}
+{{- $sharedFor := list -}}
+{{- range $svc := default list $.Values.sharedServices -}}
+{{- $targets := fromJsonArray (include "tenzir-node.sharedTargetNodes" (dict "root" $ "svc" $svc)) -}}
+{{- if has $node.name $targets -}}
+{{- $sharedFor = append $sharedFor $svc.name -}}
+{{- $proto := default "TCP" $svc.protocol -}}
+{{- $tp := default $svc.port $svc.targetPort -}}
+{{- $key := printf "%d/%s" (int $tp) $proto -}}
+{{- if not (hasKey $ports $key) -}}
+{{- $_ := set $ports $key (dict "name" $svc.name "containerPort" (int $tp) "protocol" $proto) -}}
+{{- end -}}
+{{- end -}}
+{{- end }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "tenzir-node.nodeName" (dict "root" $ "node" $node) }}
+  labels:
+    {{- include "tenzir-node.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: node
+    app.kubernetes.io/tenzir-node: {{ $node.name | quote }}
+spec:
+  replicas: 1
+  serviceName: {{ include "tenzir-node.headlessServiceName" (dict "root" $ "node" $node) }}
+  updateStrategy:
+    {{- toYaml $.Values.updateStrategy | nindent 4 }}
+  selector:
+    matchLabels:
+      {{- include "tenzir-node.nodeSelectorLabels" (dict "root" $ "node" $node) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "tenzir-node.nodeSelectorLabels" (dict "root" $ "node" $node) | nindent 8 }}
+        {{- range $svcName := $sharedFor }}
+        {{ include "tenzir-node.sharedLabelKey" (dict "name" $svcName) }}: "true"
+        {{- end }}
+        {{- with $.Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        checksum/config: {{ include "tenzir-node.mergedConfig" (dict "root" $ "node" $node) | sha256sum }}
+        {{- with $.Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "tenzir-node.serviceAccountName" $ }}
+      automountServiceAccountToken: {{ $.Values.serviceAccount.automount }}
+      {{- with $.Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $.Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $.Values.priorityClassName }}
+      priorityClassName: {{ . | quote }}
+      {{- end }}
+      {{- with $.Values.runtimeClassName }}
+      runtimeClassName: {{ . | quote }}
+      {{- end }}
+      {{- with $.Values.initContainers }}
+      initContainers:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: tenzir-node
+          image: {{ include "tenzir-node.image" $ | quote }}
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          command:
+            {{- toYaml (default (list "tenzir-node") $.Values.command) | nindent 12 }}
+          args:
+            - --config=/etc/tenzir/tenzir.yaml
+            {{- with $.Values.args }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            {{- range $key, $p := $ports }}
+            - name: {{ $p.name }}
+              containerPort: {{ $p.containerPort }}
+              protocol: {{ $p.protocol }}
+            {{- end }}
+          {{- if or $token.value $token.existingSecret (gt (len $.Values.extraEnv) 0) }}
+          env:
+            {{- if or $token.value $token.existingSecret }}
+            - name: TENZIR_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "tenzir-node.tokenSecretName" (dict "root" $ "node" $node) }}
+                  key: {{ default "TENZIR_TOKEN" $token.key | quote }}
+            {{- end }}
+            {{- with $.Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- end }}
+          {{- with $.Values.containerSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- if $.Values.readinessProbe.enabled }}
+          readinessProbe:
+            tcpSocket:
+              port: node
+            initialDelaySeconds: {{ $.Values.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ $.Values.readinessProbe.periodSeconds }}
+            timeoutSeconds: {{ $.Values.readinessProbe.timeoutSeconds }}
+            failureThreshold: {{ $.Values.readinessProbe.failureThreshold }}
+          {{- end }}
+          {{- if $.Values.livenessProbe.enabled }}
+          livenessProbe:
+            tcpSocket:
+              port: node
+            initialDelaySeconds: {{ $.Values.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ $.Values.livenessProbe.periodSeconds }}
+            timeoutSeconds: {{ $.Values.livenessProbe.timeoutSeconds }}
+            failureThreshold: {{ $.Values.livenessProbe.failureThreshold }}
+          {{- end }}
+          {{- with $.Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: state
+              mountPath: {{ $.Values.persistence.mountPath }}
+            - name: config
+              mountPath: /etc/tenzir/tenzir.yaml
+              subPath: tenzir.yaml
+            - name: tmp
+              mountPath: /tmp
+            {{- with $.Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "tenzir-node.configMapName" (dict "root" $ "node" $node) }}
+        - name: tmp
+          emptyDir: {}
+        {{- if not $.Values.persistence.enabled }}
+        - name: state
+          emptyDir: {}
+        {{- else if $.Values.persistence.existingClaim }}
+        - name: state
+          persistentVolumeClaim:
+            claimName: {{ $.Values.persistence.existingClaim }}
+        {{- end }}
+        {{- with $.Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with $.Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $.Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $.Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $.Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  {{- if and $.Values.persistence.enabled (not $.Values.persistence.existingClaim) }}
+  volumeClaimTemplates:
+    - metadata:
+        name: state
+        {{- with $.Values.persistence.annotations }}
+        annotations:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+      spec:
+        accessModes:
+          {{- toYaml $.Values.persistence.accessModes | nindent 10 }}
+        {{- with $.Values.persistence.storageClass }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ $.Values.persistence.size | quote }}
+  {{- end }}
+{{- end }}

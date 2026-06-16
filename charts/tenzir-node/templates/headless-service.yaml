@@ -1,0 +1,27 @@
+{{- range $node := .Values.nodes }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "tenzir-node.headlessServiceName" (dict "root" $ "node" $node) }}
+  labels:
+    {{- include "tenzir-node.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: node
+    app.kubernetes.io/tenzir-node: {{ $node.name | quote }}
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    - name: node
+      port: {{ $.Values.service.port }}
+      targetPort: node
+      protocol: TCP
+    {{- range $p := default list $node.extraPorts }}
+    - name: {{ $p.name }}
+      port: {{ default $p.containerPort $p.servicePort | int }}
+      targetPort: {{ $p.containerPort | int }}
+      protocol: {{ default "TCP" $p.protocol }}
+    {{- end }}
+  selector:
+    {{- include "tenzir-node.nodeSelectorLabels" (dict "root" $ "node" $node) | nindent 4 }}
+{{- end }}
