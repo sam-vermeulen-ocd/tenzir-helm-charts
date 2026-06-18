@@ -2,7 +2,7 @@ apiVersion: v2
 name: tenzir-node
 description: A Helm chart for running Tenzir Node on Kubernetes.
 type: application
-version: 0.1.0-rc.1
+version: 0.1.0-rc.2
 appVersion: "latest"
 keywords:
   - tenzir
