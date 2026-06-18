@@ -1,6 +1,6 @@
 created: 2026-06-18
-title: Tenzir Node Helm Chart v0.1.0-rc.2
+title: Tenzir Node Helm Chart v0.1.0
 intro: >-
   Initial release of the Tenzir Node Helm chart.
 source:
-  mode: snapshot-prerelease
+  mode: promote-prerelease
